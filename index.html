@@ -3,20 +3,20 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3D 双人对战国际象棋 - Real 3D Chess</title>
-    <!-- Tailwind CSS (界面) -->
+    <title>3D 国际象棋 - 完美联机版</title>
+    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
-    <!-- Three.js (3D 渲染) -->
+
+    <!-- Three.js 3D 引擎 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    
-    <!-- Chess.js (规则引擎) -->
+
+    <!-- Chess.js 规则引擎 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
-    
-    <!-- PeerJS (WebRTC P2P 免费联网库) -->
+
+    <!-- PeerJS 网络通信库 -->
     <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
-    
+
     <style>
         body { margin: 0; overflow: hidden; background-color: #0f172a; }
         #canvas-container { width: 100vw; height: 100vh; }
@@ -29,16 +29,15 @@
 </head>
 <body class="text-white font-sans select-none">
 
-    <!-- 3D 画布 -->
     <div id="canvas-container"></div>
 
-    <!-- UI 操作面板 -->
+    <!-- UI 面板 -->
     <div class="absolute top-6 left-6 z-10 glass-panel p-6 rounded-2xl shadow-2xl max-w-sm w-full">
         <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-amber-200 to-yellow-500">
-            3D 双人对战国际象棋
+            3D 极致光影国际象棋
         </h1>
-        
-        <!-- 模式切换 -->
+
+        <!-- 模式选择 -->
         <div class="mt-4 flex bg-slate-800/80 p-1 rounded-xl border border-slate-700">
             <button id="mode-offline" class="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition">
                 线下双人
@@ -48,17 +47,19 @@
             </button>
         </div>
 
-        <!-- 线上联机专属控制区 -->
+        <!-- 线上控制区（只需要一个房间号） -->
         <div id="online-controls" class="hidden mt-4 pt-3 border-t border-slate-700/50">
-            <div class="text-xs text-slate-300 mb-2">我的房间号: <span id="my-peer-id" class="font-mono text-amber-400 select-all">生成中...</span></div>
-            <div class="flex gap-2">
-                <input id="join-peer-id" type="text" placeholder="输入对方房间号" class="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500">
-                <button id="connect-btn" class="px-3 py-1.5 bg-amber-500 text-slate-950 text-xs font-bold rounded-lg hover:bg-amber-400 transition">连接</button>
+            <div class="flex gap-2 mb-2">
+                <input id="room-id-input" type="text" placeholder="输入自定义房间号" class="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500">
             </div>
-            <div id="conn-status" class="text-[10px] mt-1 text-slate-400">未连接</div>
+            <div class="flex gap-2">
+                <button id="create-room-btn" class="flex-1 py-1.5 bg-amber-500 text-slate-950 text-xs font-bold rounded-lg hover:bg-amber-400 transition">创建(执白)</button>
+                <button id="join-room-btn" class="flex-1 py-1.5 bg-slate-700 text-slate-200 text-xs font-bold rounded-lg hover:bg-slate-600 transition">加入(执黑)</button>
+            </div>
+            <div id="conn-status" class="text-[11px] mt-2 text-slate-400">状态: 未连接</div>
         </div>
 
-        <!-- 局势信息 -->
+        <!-- 棋局状态 display -->
         <div class="mt-4 border-t border-slate-700/50 pt-3">
             <div class="flex justify-between items-center mb-2">
                 <span class="text-xs text-slate-300">当前回合：</span>
@@ -67,14 +68,14 @@
                 </span>
             </div>
             <div class="flex justify-between items-center">
-                <span class="text-xs text-slate-300">状态：</span>
+                <span class="text-xs text-slate-300">局势状态：</span>
                 <span id="status-display" class="text-xs text-emerald-400 font-medium">进行中</span>
             </div>
         </div>
 
         <div class="mt-4 flex gap-2">
             <button id="reset-btn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl border border-slate-700 transition">
-                重置棋局
+                重新开始 (双方同步)
             </button>
             <button id="flip-btn" class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl border border-slate-700 transition">
                 翻转视角
@@ -82,12 +83,11 @@
         </div>
     </div>
 
-    <!-- 核心逻辑 -->
     <script>
-        // --- 1. 游戏状态与网络 ---
+        // --- 1. 全局变量与状态 ---
         const game = new Chess();
-        let gameMode = 'offline'; // 'offline' 或 'online'
-        let myColor = 'w'; // 线上模式下我的颜色 'w' 或 'b'
+        let gameMode = 'offline';
+        let myColor = 'w';
         let peer = null;
         let conn = null;
 
@@ -115,7 +115,7 @@
         controls.maxPolarAngle = Math.PI / 2 - 0.05;
         controls.target.set(0, 0, 0);
 
-        // 光照
+        // 灯光
         scene.add(new THREE.AmbientLight(0xffffff, 0.4));
         const dirLight = new THREE.DirectionalLight(0xfffaed, 1.5);
         dirLight.position.set(8, 15, 8);
@@ -128,14 +128,17 @@
         fillLight.position.set(-8, 10, -8);
         scene.add(fillLight);
 
-        // 材质
+        // 材质定义
         const darkSquareMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.3 });
         const lightSquareMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.2 });
         const whitePieceMat = new THREE.MeshPhysicalMaterial({ color: 0xf8fafc, roughness: 0.15, clearcoat: 0.8 });
         const blackPieceMat = new THREE.MeshPhysicalMaterial({ color: 0x0f172a, roughness: 0.2, clearcoat: 0.5 });
-        const highlightMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.5 });
+        
+        // 高亮材质
+        const moveMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.6 }); // 可走范围 (绿)
+        const checkMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.8 }); // 被将军提示 (红)
 
-        // 棋盘构建
+        // 棋盘绘制
         const boardGroup = new THREE.Group();
         const squareSize = 1;
         const boardOffset = 3.5;
@@ -160,7 +163,7 @@
         }
         scene.add(boardGroup);
 
-        // 3D 棋子 Geometry
+        // 棋子 Mesh 构造
         function createPieceGeometry(type) {
             const group = new THREE.Group();
             const base = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 0.15, 32));
@@ -217,11 +220,21 @@
         }
 
         let piecesInScene = [];
+        let highlights = [];
+
+        function clearHighlights() {
+            highlights.forEach(h => scene.remove(h));
+            highlights = [];
+        }
+
+        // 渲染棋盘上的棋子
         function renderPieces() {
             piecesInScene.forEach(p => scene.remove(p));
             piecesInScene = [];
 
             const board = game.board();
+            let kingSquareInCheck = null;
+
             for (let r = 0; r < 8; r++) {
                 for (let c = 0; c < 8; c++) {
                     const piece = board[r][c];
@@ -233,35 +246,78 @@
                         pieceMesh.position.set(c - boardOffset, 0, r - boardOffset);
                         if (piece.color === 'b') pieceMesh.rotation.y = Math.PI;
 
-                        pieceMesh.userData = { square: String.fromCharCode(97 + c) + (8 - r) };
+                        const sqName = String.fromCharCode(97 + c) + (8 - r);
+                        pieceMesh.userData = { square: sqName };
                         scene.add(pieceMesh);
                         piecesInScene.push(pieceMesh);
+
+                        // 记录处于将军状态的“王”的格子
+                        if (game.in_check() && piece.type === 'k' && piece.color === game.turn()) {
+                            kingSquareInCheck = sqName;
+                        }
                     }
                 }
             }
+
+            // 更新将军红框高亮
+            clearHighlights();
+            if (kingSquareInCheck && squares[kingSquareInCheck]) {
+                const geo = new THREE.RingGeometry(0.2, 0.45, 32);
+                const mesh = new THREE.Mesh(geo, checkMat);
+                mesh.rotation.x = -Math.PI / 2;
+                mesh.position.set(squares[kingSquareInCheck].position.x, 0.02, squares[kingSquareInCheck].position.z);
+                scene.add(mesh);
+                highlights.push(mesh);
+            }
+
             updateUI();
         }
 
-        // --- 3. 点击与移动控制 ---
+        // 显示棋子可走的合法范围（自动防御将军状态）
+        function showLegalMoves(fromSquare) {
+            clearHighlights();
+            // 重新保留将军警示红框
+            if (game.in_check()) {
+                const board = game.board();
+                for (let r = 0; r < 8; r++) {
+                    for (let c = 0; c < 8; c++) {
+                        const p = board[r][c];
+                        if (p && p.type === 'k' && p.color === game.turn()) {
+                            const sq = String.fromCharCode(97 + c) + (8 - r);
+                            const geo = new THREE.RingGeometry(0.2, 0.45, 32);
+                            const mesh = new THREE.Mesh(geo, checkMat);
+                            mesh.rotation.x = -Math.PI / 2;
+                            mesh.position.set(squares[sq].position.x, 0.02, squares[sq].position.z);
+                            scene.add(mesh);
+                            highlights.push(mesh);
+                        }
+                    }
+                }
+            }
+
+            // 获取该格子棋子的所有合法走法
+            const moves = game.moves({ square: fromSquare, verbose: true });
+            moves.forEach(m => {
+                const targetSq = squares[m.to];
+                if (targetSq) {
+                    const geo = new THREE.CircleGeometry(0.2, 32);
+                    const mesh = new THREE.Mesh(geo, moveMat);
+                    mesh.rotation.x = -Math.PI / 2;
+                    mesh.position.set(targetSq.position.x, 0.02, targetSq.position.z);
+                    scene.add(mesh);
+                    highlights.push(mesh);
+                }
+            });
+        }
+
+        // --- 3. 交互逻辑 ---
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2();
         let selectedSquare = null;
-        let highlightMesh = null;
-
-        function showHighlight(sq) {
-            if (highlightMesh) scene.remove(highlightMesh);
-            if (!sq || !squares[sq]) return;
-            const geo = new THREE.PlaneGeometry(0.9, 0.9);
-            highlightMesh = new THREE.Mesh(geo, highlightMat);
-            highlightMesh.rotation.x = -Math.PI / 2;
-            highlightMesh.position.set(squares[sq].position.x, 0.01, squares[sq].position.z);
-            scene.add(highlightMesh);
-        }
 
         function onPointerDown(event) {
             if (event.button !== 0) return;
-
-            // 线上模式下，如果不是自己的回合，禁止点击
+            // 线上模式：只能在属于自己的回合操作
             if (gameMode === 'online' && game.turn() !== myColor) return;
 
             mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
@@ -290,101 +346,123 @@
 
             if (selectedSquare === null) {
                 const piece = game.get(sq);
-                // 线下模式可以点击当前回合的任意棋子；线上模式只能点击属于自己颜色的棋子
                 if (piece && (gameMode === 'offline' ? piece.color === game.turn() : piece.color === myColor)) {
                     selectedSquare = sq;
-                    showHighlight(sq);
+                    showLegalMoves(sq); // 显示可走范围
                 }
             } else {
-                const moveObj = { from: selectedSquare, to: sq, promotion: 'q' };
-                const move = game.move(moveObj);
+                // 尝试移动
+                const move = game.move({ from: selectedSquare, to: sq, promotion: 'q' });
 
                 if (move !== null) {
                     selectedSquare = null;
-                    showHighlight(null);
                     renderPieces();
 
-                    // 如果是线上模式，将行棋数据通过网络同步给对方
+                    // 线上同步当前局面 (发送完整 FEN 码，保证完美同步)
                     if (gameMode === 'online' && conn) {
-                        conn.send({ type: 'move', move: moveObj });
+                        conn.send({ type: 'sync_board', fen: game.fen() });
                     }
                 } else {
+                    // 如果点击了另一个属于自己的棋子，切换选中目标
                     const piece = game.get(sq);
                     if (piece && (gameMode === 'offline' ? piece.color === game.turn() : piece.color === myColor)) {
                         selectedSquare = sq;
-                        showHighlight(sq);
+                        showLegalMoves(sq);
                     } else {
                         selectedSquare = null;
-                        showHighlight(null);
+                        clearHighlights();
                     }
                 }
             }
         }
 
-        // --- 4. WebRTC 联网点对点模块 (PeerJS) ---
-        function initPeer() {
-            peer = new Peer();
-            peer.on('open', id => {
-                document.getElementById('my-peer-id').innerText = id;
-            });
-
-            // 监听被动连接（做房主 - 白方）
-            peer.on('connection', c => {
-                conn = c;
-                myColor = 'w'; // 房主执白
-                setupConnection();
-                document.getElementById('conn-status').innerText = "对方已加入！你是【白方】";
-                document.getElementById('conn-status').className = "text-[10px] mt-1 text-emerald-400 font-bold";
-                rotateCameraForColor('w');
-            });
+        // --- 4. 优化后的 WebRTC 联机模块（使用单一房间号） ---
+        function getRoomId() {
+            return document.getElementById('room-id-input').value.trim();
         }
 
-        // 主动连接对方（做加入者 - 黑方）
-        document.getElementById('connect-btn').addEventListener('click', () => {
-            const targetId = document.getElementById('join-peer-id').value.trim();
-            if (!targetId || !peer) return;
+        // 房主创建房间 (执白)
+        document.getElementById('create-room-btn').addEventListener('click', () => {
+            const roomId = getRoomId();
+            if (!roomId) return alert("请输入房间号！");
 
-            conn = peer.connect(targetId);
-            myColor = 'b'; // 加入者执黑
-            setupConnection();
-            document.getElementById('conn-status').innerText = "正在连接...";
+            if (peer) peer.destroy();
+            // 使用自定义 roomId 注册 Peer
+            peer = new Peer('chess-room-' + roomId);
+
+            peer.on('open', () => {
+                myColor = 'w';
+                document.getElementById('conn-status').innerText = "房间创建成功，等待对方加入...";
+                document.getElementById('conn-status').className = "text-[11px] mt-2 text-amber-400 font-bold";
+                rotateCameraForColor('w');
+            });
+
+            peer.on('connection', c => {
+                conn = c;
+                setupConnection();
+                document.getElementById('conn-status').innerText = "对方已加入！你是【白方】";
+                document.getElementById('conn-status').className = "text-[11px] mt-2 text-emerald-400 font-bold";
+                // 重置并同步棋局给加入者
+                game.reset();
+                renderPieces();
+                conn.send({ type: 'sync_board', fen: game.fen() });
+            });
+
+            peer.on('error', err => {
+                if (err.type === 'unavailable-id') {
+                    alert("该房间号已被创建，请换一个房间号或点击【加入】");
+                } else {
+                    alert("建立房间失败: " + err.type);
+                }
+            });
+        });
+
+        // 玩家加入房间 (执黑)
+        document.getElementById('join-room-btn').addEventListener('click', () => {
+            const roomId = getRoomId();
+            if (!roomId) return alert("请输入房间号！");
+
+            if (peer) peer.destroy();
+            peer = new Peer(); // 随机生成客户端 Peer ID
+
+            peer.on('open', () => {
+                conn = peer.connect('chess-room-' + roomId);
+                myColor = 'b';
+                setupConnection();
+                document.getElementById('conn-status').innerText = "正在连接房间...";
+            });
         });
 
         function setupConnection() {
             conn.on('open', () => {
                 if (myColor === 'b') {
-                    document.getElementById('conn-status').innerText = "已成功连接！你是【黑方】";
-                    document.getElementById('conn-status').className = "text-[10px] mt-1 text-emerald-400 font-bold";
+                    document.getElementById('conn-status').innerText = "成功加入房间！你是【黑方】";
+                    document.getElementById('conn-status').className = "text-[11px] mt-2 text-emerald-400 font-bold";
                     rotateCameraForColor('b');
                 }
             });
 
+            // 核心修复：通过 FEN 强行全面同步棋盘状态，解决复原与不同步问题
             conn.on('data', data => {
-                if (data.type === 'move') {
-                    game.move(data.move);
-                    renderPieces();
-                } else if (data.type === 'reset') {
-                    game.reset();
+                if (data.type === 'sync_board') {
+                    game.load(data.fen);
+                    selectedSquare = null;
                     renderPieces();
                 }
             });
 
             conn.on('close', () => {
-                document.getElementById('conn-status').innerText = "连接已断开";
-                document.getElementById('conn-status').className = "text-[10px] mt-1 text-rose-400";
+                document.getElementById('conn-status').innerText = "对方已断开连接";
+                document.getElementById('conn-status').className = "text-[11px] mt-2 text-rose-400";
             });
         }
 
         function rotateCameraForColor(color) {
-            if (color === 'b') {
-                camera.position.set(0, 12, -12);
-            } else {
-                camera.position.set(0, 12, 12);
-            }
+            camera.position.set(0, 12, color === 'b' ? -12 : 12);
             controls.target.set(0, 0, 0);
         }
 
-        // --- 5. UI 与模式切换 ---
+        // --- 5. UI 与模式事件绑定 ---
         document.getElementById('mode-offline').addEventListener('click', () => {
             gameMode = 'offline';
             document.getElementById('mode-offline').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition";
@@ -397,22 +475,22 @@
             document.getElementById('mode-online').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition";
             document.getElementById('mode-offline').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition";
             document.getElementById('online-controls').classList.remove('hidden');
-            if (!peer) initPeer();
         });
 
         document.getElementById('flip-btn').addEventListener('click', () => {
-            const z = camera.position.z;
-            camera.position.z = -z;
+            camera.position.z = -camera.position.z;
             controls.target.set(0, 0, 0);
         });
 
+        // 重置棋局事件
         document.getElementById('reset-btn').addEventListener('click', () => {
             game.reset();
             selectedSquare = null;
-            showHighlight(null);
             renderPieces();
+
+            // 线上模式同步发送全新的初始化 FEN 给对方
             if (gameMode === 'online' && conn) {
-                conn.send({ type: 'reset' });
+                conn.send({ type: 'sync_board', fen: game.fen() });
             }
         });
 
