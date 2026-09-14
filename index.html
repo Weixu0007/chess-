@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 国际象棋 - 高颜值优雅联机版</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Three.js & Controls -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <!-- Chess.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <!-- PeerJS 实时联机库 -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f3f4f6; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        
+        .simple-panel {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+        }
+
+        .simple-btn {
+            background: #374151;
+            color: white;
+            transition: all 0.2s;
+        }
+        .simple-btn:hover {
+            background: #1f2937;
+        }
+
+        .promo-choice {
+            transition: transform 0.15s ease, background-color 0.15s ease;
+        }
+        .promo-choice:hover {
+            transform: scale(1.1);
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="select-none">
+
+    <div id="canvas-container"></div>
+
+    <!-- 控制面板（包含联机房间功能） -->
+    <div class="absolute top-5 left-5 z-10 simple-panel p-4 rounded-xl text-slate-800 w-64">
+        <div class="flex justify-between items-center mb-3">
+            <span class="font-bold text-sm tracking-wide text-gray-800">3D 巫师棋</span>
+            <span id="turn-display" class="px-2 py-0.5 bg-gray-100 text-gray-700 font-bold text-xs rounded border border-gray-200">白方回合</span>
+        </div>
+
+        <div class="text-xs text-gray-500 mb-2 flex justify-between items-center" id="status-display">
+            <span>对局状态：单机模式</span>
+        </div>
+
+        <div class="text-xs font-semibold mb-3 text-blue-600" id="role-display">当前阵营：单机双人</div>
+
+        <!-- 联机房间控制区 -->
+        <div class="space-y-2 border-t border-b border-gray-200/80 py-2.5 my-2.5">
+            <div class="flex gap-1.5">
+                <button id="create-room-btn" class="simple-btn flex-1 py-1 rounded-lg text-xs font-medium bg-indigo-600 hover:bg-indigo-700">创建房间</button>
+                <button id="copy-id-btn" class="hidden simple-btn px-2 py-1 rounded-lg text-xs font-medium bg-gray-600 hover:bg-gray-700">复制房号</button>
+            </div>
+            <div class="flex gap-1.5">
+                <input id="room-input" type="text" placeholder="输入房间ID..." class="w-full px-2 py-1 text-xs border border-gray-300 rounded-lg outline-none focus:border-indigo-500 bg-white/70">
+                <button id="join-room-btn" class="simple-btn px-3 py-1 rounded-lg text-xs font-medium whitespace-nowrap bg-emerald-600 hover:bg-emerald-700">加入</button>
+            </div>
+            <div id="room-info" class="text-[10px] text-gray-400 break-all hidden"></div>
+        </div>
+
+        <div class="flex gap-2">
+            <button id="reset-btn" class="simple-btn flex-1 py-1.5 rounded-lg text-xs font-medium">重置棋盘</button>
+            <button id="flip-btn" class="simple-btn px-3 py-1.5 rounded-lg text-xs font-medium">视角</button>
+        </div>
+    </div>
+
+    <!-- 兵升变弹窗面板 -->
+    <div id="promotion-modal" class="hidden absolute inset-0 z-50 flex items-center justify-center bg-black/20 backdrop-blur-sm">
+        <div class="simple-panel p-6 rounded-2xl text-center shadow-2xl max-w-sm w-full mx-4 border border-white/40">
+            <h3 class="font-bold text-gray-800 text-base mb-1">兵升变 (Promotion)</h3>
+            <p class="text-xs text-gray-500 mb-4">请选择你要升变为的棋子：</p>
+            <div class="flex justify-center gap-3">
+                <button data-piece="q" class="promo-choice p-3 rounded-xl border border-gray-200 bg-white/80 text-2xl shadow-sm">♛<span class="block text-[10px] text-gray-600 mt-1">后</span></button>
+                <button data-piece="r" class="promo-choice p-3 rounded-xl border border-gray-200 bg-white/80 text-2xl shadow-sm">♜<span class="block text-[10px] text-gray-600 mt-1">车</span></button>
+                <button data-piece="b" class="promo-choice p-3 rounded-xl border border-gray-200 bg-white/80 text-2xl shadow-sm">♝<span class="block text-[10px] text-gray-600 mt-1">象</span></button>
+                <button data-piece="n" class="promo-choice p-3 rounded-xl border border-gray-200 bg-white/80 text-2xl shadow-sm">♞<span class="block text-[10px] text-gray-600 mt-1">马</span></button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const game = new Chess();
+
+        // --- 联机网络状态变量 ---
+        let peer = null;
+        let conn = null;
+        let playerColor = null; // null: 本地单机, 'w': 白方Host, 'b': 黑方Client
+
+        // --- Three.js 高清场景渲染 ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0xefede8);
+
+        const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 9.5, 9);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.0;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;
+
+        // 打光
+        scene.add(new THREE.AmbientLight(0xffffff, 0.85));
+
+        const mainLight = new THREE.DirectionalLight(0xfffaed, 1.0);
+        mainLight.position.set(6, 14, 7);
+        mainLight.castShadow = true;
+        mainLight.shadow.mapSize.width = 2048;
+        mainLight.shadow.mapSize.height = 2048;
+        mainLight.shadow.bias = -0.0001;
+        scene.add(mainLight);
+
+        const fillLight = new THREE.DirectionalLight(0xe2e8f0, 0.4);
+        fillLight.position.set(-6, 10, -6);
+        scene.add(fillLight);
+
+        // --- 材质配置 ---
+        const blackSquareMat = new THREE.MeshStandardMaterial({ color: 0x8c7c6d, roughness: 0.5 });
+        const whiteSquareMat = new THREE.MeshStandardMaterial({ color: 0xe6dfd5, roughness: 0.4 });
+        const borderMat = new THREE.MeshStandardMaterial({ color: 0x5c4d41, roughness: 0.4 });
+
+        const whitePieceMat = new THREE.MeshStandardMaterial({ color: 0xf5f0eb, roughness: 0.25, metalness: 0.1 });
+        const blackPieceMat = new THREE.MeshStandardMaterial({ color: 0x5a4638, roughness: 0.3, metalness: 0.1 });
+
+        const moveRingMat = new THREE.MeshBasicMaterial({ color: 0x3b82f6, transparent: true, opacity: 0.7 });
+        const checkRingMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.85 });
+
+        // --- 构建棋盘 ---
+        const boardOffset = 3.5;
+        const squares = {};
+
+        const borderMesh = new THREE.Mesh(new THREE.BoxGeometry(8.3, 0.15, 8.3), borderMat);
+        borderMesh.position.y = -0.08;
+        borderMesh.receiveShadow = true;
+        scene.add(borderMesh);
+
+        for (let x = 0; x < 8; x++) {
+            for (let z = 0; z < 8; z++) {
+                const isDark = (x + z) % 2 === 1;
+                const square = new THREE.Mesh(new THREE.BoxGeometry(1, 0.1, 1), isDark ? blackSquareMat : whiteSquareMat);
+                square.position.set(x - boardOffset, -0.05, z - boardOffset);
+                square.receiveShadow = true;
+                const squareName = String.fromCharCode(97 + x) + (8 - z);
+                square.userData = { squareName };
+                squares[squareName] = square;
+                scene.add(square);
+            }
+        }
+
+        // --- 程序化 Staunton 棋子生成器 ---
+        function createSmoothBase(profilePoints, material) {
+            const points = profilePoints.map(p => new THREE.Vector2(p[0], p[1]));
+            const geo = new THREE.LatheGeometry(points, 32);
+            const mesh = new THREE.Mesh(geo, material);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            return mesh;
+        }
+
+        function createGorgeousPiece(type, color) {
+            const group = new THREE.Group();
+            const mainMat = color === 'w' ? whitePieceMat : blackPieceMat;
+
+            const baseProfile = [
+                [0, 0], [0.38, 0], [0.38, 0.04], [0.33, 0.08], [0.34, 0.12], 
+                [0.25, 0.22], [0.22, 0.35], [0.24, 0.38], [0.2, 0.42]
+            ];
+
+            switch (type.toLowerCase()) {
+                case 'p':
+                    const pawnProfile = [...baseProfile, [0.14, 0.55], [0.22, 0.61], [0, 0.63]];
+                    group.add(createSmoothBase(pawnProfile, mainMat));
+                    const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.15, 24, 24), mainMat);
+                    headMesh.position.y = 0.74;
+                    headMesh.castShadow = true;
+                    group.add(headMesh);
+                    break;
+
+                case 'r':
+                    const rookProfile = [...baseProfile, [0.23, 0.52], [0.26, 0.65], [0.28, 0.68], [0.2, 0.68], [0, 0.6]];
+                    group.add(createSmoothBase(rookProfile, mainMat));
+                    const topTurret = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.26, 0.14, 8), mainMat);
+                    topTurret.position.y = 0.75;
+                    topTurret.castShadow = true;
+                    group.add(topTurret);
+                    break;
+
+                case 'n':
+                    const knightBase = [...baseProfile, [0.2, 0.42], [0, 0.42]];
+                    group.add(createSmoothBase(knightBase, mainMat));
+                    const horseGroup = new THREE.Group();
+                    const neck = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.38, 0.28), mainMat);
+                    neck.position.set(0, 0.6, 0.02);
+                    neck.rotation.x = 0.35;
+                    horseGroup.add(neck);
+
+                    const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.2, 0.35), mainMat);
+                    head.position.set(0, 0.74, 0.12);
+                    head.rotation.x = 0.15;
+                    horseGroup.add(head);
+
+                    const snout = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.25, 16), mainMat);
+                    snout.position.set(0, 0.68, 0.28);
+                    snout.rotation.x = 1.35;
+                    horseGroup.add(snout);
+
+                    horseGroup.traverse(c => { if(c.isMesh) c.castShadow = true; });
+                    group.add(horseGroup);
+                    break;
+
+                case 'b':
+                    const bishopProfile = [...baseProfile, [0.15, 0.55], [0.21, 0.65], [0.18, 0.8], [0.08, 0.85], [0, 0.85]];
+                    group.add(createSmoothBase(bishopProfile, mainMat));
+                    const bBall = new THREE.Mesh(new THREE.SphereGeometry(0.06, 16, 16), mainMat);
+                    bBall.position.y = 0.9;
+                    bBall.castShadow = true;
+                    group.add(bBall);
+                    break;
+
+                case 'q':
+                    const queenProfile = [...baseProfile, [0.16, 0.58], [0.26, 0.72], [0.21, 0.88], [0, 0.92]];
+                    group.add(createSmoothBase(queenProfile, mainMat));
+                    const qOrb = new THREE.Mesh(new THREE.SphereGeometry(0.09, 16, 16), mainMat);
+                    qOrb.position.y = 1.0;
+                    qOrb.castShadow = true;
+                    group.add(qOrb);
+                    break;
+
+                case 'k':
+                    const kingProfile = [...baseProfile, [0.18, 0.62], [0.27, 0.78], [0.22, 0.95], [0, 0.98]];
+                    group.add(createSmoothBase(kingProfile, mainMat));
+                    const crossV = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.22, 0.05), mainMat);
+                    crossV.position.y = 1.12;
+                    const crossH = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.05, 0.05), mainMat);
+                    crossH.position.y = 1.15;
+                    crossV.castShadow = crossH.castShadow = true;
+                    group.add(crossV);
+                    group.add(crossH);
+                    break;
+            }
+
+            return group;
+        }
+
+        // --- 渲染逻辑 ---
+        let piecesInScene = [];
+        let highlights = [];
+        let pendingPromotionMove = null;
+
+        function clearHighlights() {
+            highlights.forEach(h => scene.remove(h));
+            highlights = [];
+        }
+
+        function findKingSquare(color) {
+            const board = game.board();
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const p = board[r][c];
+                    if (p && p.type === 'k' && p.color === color) {
+                        return { x: c - boardOffset, z: r - boardOffset };
+                    }
+                }
+            }
+            return null;
+        }
+
+        function renderPieces() {
+            piecesInScene.forEach(p => scene.remove(p));
+            piecesInScene = [];
+
+            const board = game.board();
+            let kingInCheckSq = null;
+
+            const whiteKingPos = findKingSquare('w');
+            const blackKingPos = findKingSquare('b');
+
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const piece = board[r][c];
+                    if (piece) {
+                        const pieceMesh = createGorgeousPiece(piece.type, piece.color);
+                        const piecePosX = c - boardOffset;
+                        const piecePosZ = r - boardOffset;
+                        pieceMesh.position.set(piecePosX, 0, piecePosZ);
+
+                        const enemyKingPos = piece.color === 'w' ? blackKingPos : whiteKingPos;
+                        if (enemyKingPos && (piecePosX !== enemyKingPos.x || piecePosZ !== enemyKingPos.z)) {
+                            pieceMesh.lookAt(enemyKingPos.x, pieceMesh.position.y, enemyKingPos.z);
+                        } else {
+                            if (piece.color === 'b') pieceMesh.rotation.y = Math.PI;
+                        }
+
+                        const sqName = String.fromCharCode(97 + c) + (8 - r);
+                        pieceMesh.userData = { square: sqName };
+                        scene.add(pieceMesh);
+                        piecesInScene.push(pieceMesh);
+
+                        if (game.in_check() && piece.type === 'k' && piece.color === game.turn()) {
+                            kingInCheckSq = sqName;
+                        }
+                    }
+                }
+            }
+
+            clearHighlights();
+
+            if (kingInCheckSq && squares[kingInCheckSq]) {
+                const ringGeo = new THREE.RingGeometry(0.2, 0.42, 32);
+                const ringMesh = new THREE.Mesh(ringGeo, checkRingMat);
+                ringMesh.rotation.x = -Math.PI / 2;
+                ringMesh.position.set(squares[kingInCheckSq].position.x, 0.01, squares[kingInCheckSq].position.z);
+                scene.add(ringMesh);
+                highlights.push(ringMesh);
+            }
+
+            updateUI();
+        }
+
+        function showLegalMoves(fromSquare) {
+            clearHighlights();
+            const moves = game.moves({ square: fromSquare, verbose: true });
+            moves.forEach(m => {
+                const targetSq = squares[m.to];
+                if (targetSq) {
+                    const ringGeo = new THREE.RingGeometry(0.2, 0.4, 32);
+                    const ringMesh = new THREE.Mesh(ringGeo, moveRingMat);
+                    ringMesh.rotation.x = -Math.PI / 2;
+                    ringMesh.position.set(targetSq.position.x, 0.01, targetSq.position.z);
+                    scene.add(ringMesh);
+                    highlights.push(ringMesh);
+                }
+            });
+        }
+
+        // Raycasting 交互
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let selectedSquare = null;
+
+        function onPointerDown(event) {
+            if (event.button !== 0 || pendingPromotionMove) return;
+
+            // 如果在联机模式下，非己方回合不可交互
+            if (playerColor !== null && game.turn() !== playerColor) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            if (intersects.length > 0) {
+                let clickedSquare = null;
+                for (let hit of intersects) {
+                    let obj = hit.object;
+                    while (obj.parent && obj.parent !== scene && !obj.userData.squareName) {
+                        if (obj.userData.square) { clickedSquare = obj.userData.square; break; }
+                        obj = obj.parent;
+                    }
+                    if (clickedSquare) break;
+                    if (obj.userData.squareName) { clickedSquare = obj.userData.squareName; break; }
+                }
+                if (clickedSquare) handleSquareClick(clickedSquare);
+            }
+        }
+
+        function handleSquareClick(sq) {
+            if (game.game_over()) return;
+
+            if (selectedSquare === null) {
+                const piece = game.get(sq);
+                if (piece && piece.color === game.turn()) {
+                    selectedSquare = sq;
+                    showLegalMoves(sq);
+                }
+            } else {
+                const movingPiece = game.get(selectedSquare);
+                const isPawnPromotion = movingPiece && movingPiece.type === 'p' && 
+                                        ((movingPiece.color === 'w' && sq[1] === '8') || (movingPiece.color === 'b' && sq[1] === '1'));
+
+                if (isPawnPromotion) {
+                    const validMoves = game.moves({ square: selectedSquare, verbose: true });
+                    const isValid = validMoves.some(m => m.to === sq);
+                    if (isValid) {
+                        pendingPromotionMove = { from: selectedSquare, to: sq };
+                        document.getElementById('promotion-modal').classList.remove('hidden');
+                        return;
+                    }
+                }
+
+                executeMove({ from: selectedSquare, to: sq, promotion: 'q' });
+            }
+        }
+
+        function executeMove(moveObj, isRemote = false) {
+            const move = game.move(moveObj);
+            if (move !== null) {
+                selectedSquare = null;
+                renderPieces();
+
+                // 发送移动数据给对手
+                if (!isRemote && conn && conn.open) {
+                    conn.send({ type: 'MOVE', move: moveObj });
+                }
+            } else {
+                const piece = game.get(moveObj.to);
+                if (piece && piece.color === game.turn()) {
+                    selectedSquare = moveObj.to;
+                    showLegalMoves(moveObj.to);
+                } else {
+                    selectedSquare = null;
+                    clearHighlights();
+                }
+            }
+        }
+
+        // 兵升变按钮点击
+        document.querySelectorAll('.promo-choice').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const promoPiece = e.currentTarget.getAttribute('data-piece');
+                if (pendingPromotionMove && promoPiece) {
+                    const moveObj = {
+                        from: pendingPromotionMove.from,
+                        to: pendingPromotionMove.to,
+                        promotion: promoPiece
+                    };
+                    pendingPromotionMove = null;
+                    document.getElementById('promotion-modal').classList.add('hidden');
+                    executeMove(moveObj);
+                }
+            });
+        });
+
+        // 重置按钮
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            resetGame(false);
+        });
+
+        function resetGame(isRemote = false) {
+            game.reset();
+            selectedSquare = null;
+            pendingPromotionMove = null;
+            document.getElementById('promotion-modal').classList.add('hidden');
+            renderPieces();
+
+            if (!isRemote && conn && conn.open) {
+                conn.send({ type: 'RESET' });
+            }
+        }
+
+        // 视角切换按钮
+        document.getElementById('flip-btn').addEventListener('click', () => {
+            camera.position.z = -camera.position.z;
+            camera.position.x = -camera.position.x;
+            controls.target.set(0, 0, 0);
+        });
+
+        function updateUI() {
+            document.getElementById('turn-display').innerText = game.turn() === 'w' ? "白方回合" : "黑方回合";
+            const statusDisp = document.getElementById('status-display');
+            if (game.in_checkmate()) statusDisp.innerText = "将军死！对局结束";
+            else if (game.in_check()) statusDisp.innerText = "⚠️ 被将军中";
+            else {
+                if (playerColor !== null) {
+                    statusDisp.innerText = game.turn() === playerColor ? "🟢 轮到你的回合" : "⏳ 等待对方下棋...";
+                } else {
+                    statusDisp.innerText = "单机模式进行中";
+                }
+            }
+        }
+
+        // --- P2P 联机核心逻辑 ---
+        const createBtn = document.getElementById('create-room-btn');
+        const joinBtn = document.getElementById('join-room-btn');
+        const copyBtn = document.getElementById('copy-id-btn');
+        const roomInput = document.getElementById('room-input');
+        const roomInfo = document.getElementById('room-info');
+        const roleDisplay = document.getElementById('role-display');
+
+        function initPeer() {
+            if (peer) return;
+            peer = new Peer();
+
+            peer.on('open', (id) => {
+                roomInfo.innerText = "你的房间ID: " + id;
+                roomInfo.classList.remove('hidden');
+                copyBtn.classList.remove('hidden');
+            });
+
+            peer.on('connection', (c) => {
+                conn = c;
+                playerColor = 'w'; // 房主为白方
+                roleDisplay.innerText = "当前阵营：白方 (房主)";
+                setupConnection();
+            });
+        }
+
+        createBtn.addEventListener('click', () => {
+            initPeer();
+            createBtn.innerText = "已创建";
+            createBtn.disabled = true;
+        });
+
+        copyBtn.addEventListener('click', () => {
+            if (peer && peer.id) {
+                navigator.clipboard.writeText(peer.id);
+                alert("房间ID已复制到剪贴板！发送给朋友即可联机。");
+            }
+        });
+
+        joinBtn.addEventListener('click', () => {
+            const targetId = roomInput.value.trim();
+            if (!targetId) return alert("请先输入房间ID！");
+
+            if (!peer) peer = new Peer();
+            
+            conn = peer.connect(targetId);
+            playerColor = 'b'; // 加入方为黑方
+            roleDisplay.innerText = "当前阵营：黑方 (客方)";
+            
+            // 黑方视角自动转向黑方正面
+            camera.position.set(0, 9.5, -9);
+            controls.target.set(0, 0, 0);
+
+            setupConnection();
+        });
+
+        function setupConnection() {
+            conn.on('open', () => {
+                alert("联机成功！游戏开始。");
+                resetGame(true);
+            });
+
+            conn.on('data', (data) => {
+                if (data.type === 'MOVE') {
+                    executeMove(data.move, true);
+                } else if (data.type === 'RESET') {
+                    resetGame(true);
+                }
+            });
+
+            conn.on('close', () => {
+                alert("对方已断开连接。");
+                playerColor = null;
+                roleDisplay.innerText = "当前阵营：单机双人";
+            });
+        }
+
+        window.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        renderPieces();
+        animate();
+    </script>
+</body>
+</html>
