@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D 双人对战国际象棋 - Real 3D Chess</title>
+    <!-- Tailwind CSS (界面) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js (3D 渲染) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <!-- Chess.js (规则引擎) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    
+    <!-- PeerJS (WebRTC P2P 免费联网库) -->
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #0f172a; }
+        #canvas-container { width: 100vw; height: 100vh; }
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+    </style>
+</head>
+<body class="text-white font-sans select-none">
+
+    <!-- 3D 画布 -->
+    <div id="canvas-container"></div>
+
+    <!-- UI 操作面板 -->
+    <div class="absolute top-6 left-6 z-10 glass-panel p-6 rounded-2xl shadow-2xl max-w-sm w-full">
+        <h1 class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-amber-200 to-yellow-500">
+            3D 双人对战国际象棋
+        </h1>
+        
+        <!-- 模式切换 -->
+        <div class="mt-4 flex bg-slate-800/80 p-1 rounded-xl border border-slate-700">
+            <button id="mode-offline" class="flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition">
+                线下双人
+            </button>
+            <button id="mode-online" class="flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition">
+                线上联网
+            </button>
+        </div>
+
+        <!-- 线上联机专属控制区 -->
+        <div id="online-controls" class="hidden mt-4 pt-3 border-t border-slate-700/50">
+            <div class="text-xs text-slate-300 mb-2">我的房间号: <span id="my-peer-id" class="font-mono text-amber-400 select-all">生成中...</span></div>
+            <div class="flex gap-2">
+                <input id="join-peer-id" type="text" placeholder="输入对方房间号" class="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-white focus:outline-none focus:border-amber-500">
+                <button id="connect-btn" class="px-3 py-1.5 bg-amber-500 text-slate-950 text-xs font-bold rounded-lg hover:bg-amber-400 transition">连接</button>
+            </div>
+            <div id="conn-status" class="text-[10px] mt-1 text-slate-400">未连接</div>
+        </div>
+
+        <!-- 局势信息 -->
+        <div class="mt-4 border-t border-slate-700/50 pt-3">
+            <div class="flex justify-between items-center mb-2">
+                <span class="text-xs text-slate-300">当前回合：</span>
+                <span id="turn-display" class="px-2.5 py-0.5 bg-amber-500/20 text-amber-300 text-xs rounded-full font-semibold border border-amber-500/30">
+                    白方
+                </span>
+            </div>
+            <div class="flex justify-between items-center">
+                <span class="text-xs text-slate-300">状态：</span>
+                <span id="status-display" class="text-xs text-emerald-400 font-medium">进行中</span>
+            </div>
+        </div>
+
+        <div class="mt-4 flex gap-2">
+            <button id="reset-btn" class="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl border border-slate-700 transition">
+                重置棋局
+            </button>
+            <button id="flip-btn" class="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium rounded-xl border border-slate-700 transition">
+                翻转视角
+            </button>
+        </div>
+    </div>
+
+    <!-- 核心逻辑 -->
+    <script>
+        // --- 1. 游戏状态与网络 ---
+        const game = new Chess();
+        let gameMode = 'offline'; // 'offline' 或 'online'
+        let myColor = 'w'; // 线上模式下我的颜色 'w' 或 'b'
+        let peer = null;
+        let conn = null;
+
+        // --- 2. Three.js 场景渲染 ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x0b0f19);
+        scene.fog = new THREE.FogExp2(0x0b0f19, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 12, 12);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        renderer.toneMapping = THREE.ACESFilmicToneMapping;
+        renderer.toneMappingExposure = 1.2;
+        container.appendChild(renderer.domElement);
+
+        const controls = new THREE.OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+        controls.maxPolarAngle = Math.PI / 2 - 0.05;
+        controls.target.set(0, 0, 0);
+
+        // 光照
+        scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+        const dirLight = new THREE.DirectionalLight(0xfffaed, 1.5);
+        dirLight.position.set(8, 15, 8);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        const fillLight = new THREE.DirectionalLight(0x38bdf8, 0.5);
+        fillLight.position.set(-8, 10, -8);
+        scene.add(fillLight);
+
+        // 材质
+        const darkSquareMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, roughness: 0.3 });
+        const lightSquareMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.2 });
+        const whitePieceMat = new THREE.MeshPhysicalMaterial({ color: 0xf8fafc, roughness: 0.15, clearcoat: 0.8 });
+        const blackPieceMat = new THREE.MeshPhysicalMaterial({ color: 0x0f172a, roughness: 0.2, clearcoat: 0.5 });
+        const highlightMat = new THREE.MeshBasicMaterial({ color: 0x10b981, transparent: true, opacity: 0.5 });
+
+        // 棋盘构建
+        const boardGroup = new THREE.Group();
+        const squareSize = 1;
+        const boardOffset = 3.5;
+        const squares = {};
+
+        const baseMesh = new THREE.Mesh(new THREE.BoxGeometry(9, 0.4, 9), new THREE.MeshStandardMaterial({ color: 0x0f172a }));
+        baseMesh.position.y = -0.21;
+        baseMesh.receiveShadow = true;
+        boardGroup.add(baseMesh);
+
+        for (let x = 0; x < 8; x++) {
+            for (let z = 0; z < 8; z++) {
+                const isDark = (x + z) % 2 === 1;
+                const square = new THREE.Mesh(new THREE.BoxGeometry(1, 0.2, 1), isDark ? darkSquareMat : lightSquareMat);
+                square.position.set(x - boardOffset, -0.1, z - boardOffset);
+                square.receiveShadow = true;
+                const squareName = String.fromCharCode(97 + x) + (8 - z);
+                square.userData = { squareName };
+                squares[squareName] = square;
+                boardGroup.add(square);
+            }
+        }
+        scene.add(boardGroup);
+
+        // 3D 棋子 Geometry
+        function createPieceGeometry(type) {
+            const group = new THREE.Group();
+            const base = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 0.15, 32));
+            base.position.y = 0.075;
+            
+            switch (type.toLowerCase()) {
+                case 'p':
+                    const pBody = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.6, 32));
+                    pBody.position.y = 0.45;
+                    const pHead = new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 32));
+                    pHead.position.y = 0.8;
+                    group.add(base, pBody, pHead);
+                    break;
+                case 'r':
+                    const rBody = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.35, 0.7, 32));
+                    rBody.position.y = 0.5;
+                    const rTop = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.3, 0.2, 8));
+                    rTop.position.y = 0.9;
+                    group.add(base, rBody, rTop);
+                    break;
+                case 'n':
+                    const nBody = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.6, 0.4));
+                    nBody.position.y = 0.5;
+                    const nHead = new THREE.Mesh(new THREE.SphereGeometry(0.22, 16, 16));
+                    nHead.position.set(0, 0.75, 0.1);
+                    group.add(base, nBody, nHead);
+                    break;
+                case 'b':
+                    const bBody = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.35, 0.8, 32));
+                    bBody.position.y = 0.55;
+                    const bTop = new THREE.Mesh(new THREE.SphereGeometry(0.2, 32, 32));
+                    bTop.scale.set(1, 1.4, 1);
+                    bTop.position.y = 0.95;
+                    group.add(base, bBody, bTop);
+                    break;
+                case 'q':
+                    const qBody = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.38, 1.0, 32));
+                    qBody.position.y = 0.65;
+                    const qCrown = new THREE.Mesh(new THREE.SphereGeometry(0.28, 32, 32));
+                    qCrown.position.y = 1.2;
+                    group.add(base, qBody, qCrown);
+                    break;
+                case 'k':
+                    const kBody = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.4, 1.1, 32));
+                    kBody.position.y = 0.7;
+                    const kCross = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.3, 0.1));
+                    kCross.position.y = 1.35;
+                    group.add(base, kBody, kCross);
+                    break;
+            }
+
+            group.traverse(child => { if (child.isMesh) child.castShadow = true; });
+            return group;
+        }
+
+        let piecesInScene = [];
+        function renderPieces() {
+            piecesInScene.forEach(p => scene.remove(p));
+            piecesInScene = [];
+
+            const board = game.board();
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const piece = board[r][c];
+                    if (piece) {
+                        const pieceMesh = createPieceGeometry(piece.type);
+                        const mat = piece.color === 'w' ? whitePieceMat : blackPieceMat;
+                        pieceMesh.traverse(child => { if (child.isMesh) child.material = mat; });
+
+                        pieceMesh.position.set(c - boardOffset, 0, r - boardOffset);
+                        if (piece.color === 'b') pieceMesh.rotation.y = Math.PI;
+
+                        pieceMesh.userData = { square: String.fromCharCode(97 + c) + (8 - r) };
+                        scene.add(pieceMesh);
+                        piecesInScene.push(pieceMesh);
+                    }
+                }
+            }
+            updateUI();
+        }
+
+        // --- 3. 点击与移动控制 ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        let selectedSquare = null;
+        let highlightMesh = null;
+
+        function showHighlight(sq) {
+            if (highlightMesh) scene.remove(highlightMesh);
+            if (!sq || !squares[sq]) return;
+            const geo = new THREE.PlaneGeometry(0.9, 0.9);
+            highlightMesh = new THREE.Mesh(geo, highlightMat);
+            highlightMesh.rotation.x = -Math.PI / 2;
+            highlightMesh.position.set(squares[sq].position.x, 0.01, squares[sq].position.z);
+            scene.add(highlightMesh);
+        }
+
+        function onPointerDown(event) {
+            if (event.button !== 0) return;
+
+            // 线上模式下，如果不是自己的回合，禁止点击
+            if (gameMode === 'online' && game.turn() !== myColor) return;
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const intersects = raycaster.intersectObjects(scene.children, true);
+            if (intersects.length > 0) {
+                let clickedSquare = null;
+                for (let hit of intersects) {
+                    let obj = hit.object;
+                    while (obj.parent && obj.parent !== scene && !obj.userData.squareName) {
+                        if (obj.userData.square) { clickedSquare = obj.userData.square; break; }
+                        obj = obj.parent;
+                    }
+                    if (clickedSquare) break;
+                    if (obj.userData.squareName) { clickedSquare = obj.userData.squareName; break; }
+                }
+
+                if (clickedSquare) handleSquareClick(clickedSquare);
+            }
+        }
+
+        function handleSquareClick(sq) {
+            if (game.game_over()) return;
+
+            if (selectedSquare === null) {
+                const piece = game.get(sq);
+                // 线下模式可以点击当前回合的任意棋子；线上模式只能点击属于自己颜色的棋子
+                if (piece && (gameMode === 'offline' ? piece.color === game.turn() : piece.color === myColor)) {
+                    selectedSquare = sq;
+                    showHighlight(sq);
+                }
+            } else {
+                const moveObj = { from: selectedSquare, to: sq, promotion: 'q' };
+                const move = game.move(moveObj);
+
+                if (move !== null) {
+                    selectedSquare = null;
+                    showHighlight(null);
+                    renderPieces();
+
+                    // 如果是线上模式，将行棋数据通过网络同步给对方
+                    if (gameMode === 'online' && conn) {
+                        conn.send({ type: 'move', move: moveObj });
+                    }
+                } else {
+                    const piece = game.get(sq);
+                    if (piece && (gameMode === 'offline' ? piece.color === game.turn() : piece.color === myColor)) {
+                        selectedSquare = sq;
+                        showHighlight(sq);
+                    } else {
+                        selectedSquare = null;
+                        showHighlight(null);
+                    }
+                }
+            }
+        }
+
+        // --- 4. WebRTC 联网点对点模块 (PeerJS) ---
+        function initPeer() {
+            peer = new Peer();
+            peer.on('open', id => {
+                document.getElementById('my-peer-id').innerText = id;
+            });
+
+            // 监听被动连接（做房主 - 白方）
+            peer.on('connection', c => {
+                conn = c;
+                myColor = 'w'; // 房主执白
+                setupConnection();
+                document.getElementById('conn-status').innerText = "对方已加入！你是【白方】";
+                document.getElementById('conn-status').className = "text-[10px] mt-1 text-emerald-400 font-bold";
+                rotateCameraForColor('w');
+            });
+        }
+
+        // 主动连接对方（做加入者 - 黑方）
+        document.getElementById('connect-btn').addEventListener('click', () => {
+            const targetId = document.getElementById('join-peer-id').value.trim();
+            if (!targetId || !peer) return;
+
+            conn = peer.connect(targetId);
+            myColor = 'b'; // 加入者执黑
+            setupConnection();
+            document.getElementById('conn-status').innerText = "正在连接...";
+        });
+
+        function setupConnection() {
+            conn.on('open', () => {
+                if (myColor === 'b') {
+                    document.getElementById('conn-status').innerText = "已成功连接！你是【黑方】";
+                    document.getElementById('conn-status').className = "text-[10px] mt-1 text-emerald-400 font-bold";
+                    rotateCameraForColor('b');
+                }
+            });
+
+            conn.on('data', data => {
+                if (data.type === 'move') {
+                    game.move(data.move);
+                    renderPieces();
+                } else if (data.type === 'reset') {
+                    game.reset();
+                    renderPieces();
+                }
+            });
+
+            conn.on('close', () => {
+                document.getElementById('conn-status').innerText = "连接已断开";
+                document.getElementById('conn-status').className = "text-[10px] mt-1 text-rose-400";
+            });
+        }
+
+        function rotateCameraForColor(color) {
+            if (color === 'b') {
+                camera.position.set(0, 12, -12);
+            } else {
+                camera.position.set(0, 12, 12);
+            }
+            controls.target.set(0, 0, 0);
+        }
+
+        // --- 5. UI 与模式切换 ---
+        document.getElementById('mode-offline').addEventListener('click', () => {
+            gameMode = 'offline';
+            document.getElementById('mode-offline').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition";
+            document.getElementById('mode-online').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition";
+            document.getElementById('online-controls').classList.add('hidden');
+        });
+
+        document.getElementById('mode-online').addEventListener('click', () => {
+            gameMode = 'online';
+            document.getElementById('mode-online').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg bg-amber-500 text-slate-950 transition";
+            document.getElementById('mode-offline').className = "flex-1 py-1.5 text-xs font-semibold rounded-lg text-slate-400 hover:text-white transition";
+            document.getElementById('online-controls').classList.remove('hidden');
+            if (!peer) initPeer();
+        });
+
+        document.getElementById('flip-btn').addEventListener('click', () => {
+            const z = camera.position.z;
+            camera.position.z = -z;
+            controls.target.set(0, 0, 0);
+        });
+
+        document.getElementById('reset-btn').addEventListener('click', () => {
+            game.reset();
+            selectedSquare = null;
+            showHighlight(null);
+            renderPieces();
+            if (gameMode === 'online' && conn) {
+                conn.send({ type: 'reset' });
+            }
+        });
+
+        function updateUI() {
+            const turnDisp = document.getElementById('turn-display');
+            const statusDisp = document.getElementById('status-display');
+
+            turnDisp.innerText = game.turn() === 'w' ? "白方" : "黑方";
+            
+            if (game.in_checkmate()) {
+                statusDisp.innerText = "将死！游戏结束";
+                statusDisp.className = "text-xs text-rose-500 font-bold";
+            } else if (game.in_draw()) {
+                statusDisp.innerText = "平局";
+                statusDisp.className = "text-xs text-amber-400 font-bold";
+            } else if (game.in_check()) {
+                statusDisp.innerText = "将军！";
+                statusDisp.className = "text-xs text-rose-400 font-bold";
+            } else {
+                statusDisp.innerText = "进行中";
+                statusDisp.className = "text-xs text-emerald-400 font-medium";
+            }
+        }
+
+        window.addEventListener('pointerdown', onPointerDown);
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+
+        renderPieces();
+        animate();
+    </script>
+</body>
+</html>
